@@ -15,11 +15,15 @@ jobs:
         with:
           distribution: zulu
           java-version: '17'
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
       - name: Install Android SDK
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
       - name: Build AAR
-        run: ./gradlew :ech:assembleRelease --no-daemon
+        run: |
+          set -euxo pipefail
+          java -version
+          sdkmanager --list_installed | head -40
+          ./gradlew :ech:assembleRelease --no-daemon --stacktrace
       - name: Verify AAR
         run: |
           set -e
