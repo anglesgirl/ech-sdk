@@ -24,6 +24,8 @@ import java.util.concurrent.TimeUnit
  */
 object EchDoh {
 
+    private const val TAG = "ECH-SDK-DOH"
+
     @Volatile private var configuredDohUrl: String? = null
     @Volatile private var configuredBootstrapIps: List<String> = emptyList()
 
