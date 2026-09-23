@@ -1,0 +1,33 @@
+name: Build Android AAR
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-aar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Build AAR
+        run: ./gradlew :ech:assembleRelease --no-daemon
+      - name: Verify AAR
+        run: |
+          set -e
+          AAR=ech/build/outputs/aar/ech-release.aar
+          test -s "$AAR"
+          unzip -t "$AAR"
+          unzip -l "$AAR" | grep -E 'classes.jar|consumer-rules.pro'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ech-sdk-aar-${{ github.sha }}
+          path: ech/build/outputs/aar/ech-release.aar

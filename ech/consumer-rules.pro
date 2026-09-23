@@ -1,0 +1,3 @@
+-keep class com.anglesgirl.echsdk.ConscryptEch$PolicyTrustManager { *; }
+-keep class com.anglesgirl.echsdk.EchSdk { *; }
+-keep class com.anglesgirl.echsdk.EchHosts { *; }
