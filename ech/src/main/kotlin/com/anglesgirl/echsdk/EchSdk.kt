@@ -46,6 +46,7 @@ object EchSdk {
      */
     fun configure(builder: OkHttpClient.Builder): OkHttpClient.Builder {
         check(config != null) { "EchSdk.install(context, config) must be called first" }
+        check(ConscryptEch.ready) { "Conscrypt ECH is not ready; refusing unprotected client setup" }
         val original = ProxySelector.getDefault()
         val originalDns = builder.build().dns
         val echDns = EchDns(originalDns)
