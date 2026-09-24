@@ -16,20 +16,28 @@ import java.net.URI
 object EchSdk {
     data class Config(
         val protectedHosts: Set<String>,
-        val dohUrl: String,
+        val dohUrl: String? = null,
         val dohBootstrapIps: List<String> = emptyList(),
         val userAgent: String? = null,
         val logger: EchLogger = EchLogger { _, _ -> },
+        val gatewayPoolTxt: String = "doh.xn--pn1aul.eu.org",
+        val preferredIpsTxt: String = "ip.xn--pn1aul.eu.org",
     )
 
     @Volatile private var config: Config? = null
 
     fun install(context: Context, config: Config) {
+        require(config.protectedHosts.isNotEmpty()) { "At least one protected host is required" }
+        require(config.gatewayPoolTxt.isNotBlank() && config.preferredIpsTxt.isNotBlank()) {
+            "Gateway-pool and preferred-IP TXT names must be configured"
+        }
         this.config = config
         EchHosts.configure(config.protectedHosts)
         EchDoh.configure(config.dohUrl, config.dohBootstrapIps)
+        EchDoh.configureTxtRecords(config.gatewayPoolTxt, config.preferredIpsTxt)
         EchDiagnostics.logger = config.logger
-        ConscryptEch.install()
+        EchState.attach(context.applicationContext)
+        check(ConscryptEch.install()) { "Conscrypt ECH 初始化失败，拒绝继续创建客户端" }
     }
 
     /**

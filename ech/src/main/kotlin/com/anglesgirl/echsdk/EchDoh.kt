@@ -26,13 +26,23 @@ object EchDoh {
 
     private const val TAG = "ECH-SDK-DOH"
 
+    private var configuredBootstrapIps: List<String> = emptyList()
     @Volatile private var configuredDohUrl: String? = null
-    @Volatile private var configuredBootstrapIps: List<String> = emptyList()
+    @Volatile private var configuredGatewayPoolTxt = "doh.xn--pn1aul.eu.org"
+    @Volatile private var configuredPreferredIpsTxt = "ip.xn--pn1aul.eu.org"
 
-    fun configure(dohUrl: String, bootstrapIps: List<String> = emptyList()) {
-        require(dohUrl.startsWith("https://")) { "DoH URL must use HTTPS" }
+    fun configure(dohUrl: String?, bootstrapIps: List<String> = emptyList()) {
+        if (dohUrl != null) require(dohUrl.startsWith("https://")) { "DoH URL must use HTTPS" }
         configuredDohUrl = dohUrl
         configuredBootstrapIps = bootstrapIps.filter { it.isNotBlank() }
+        invalidateGatewayForSdk()
+    }
+
+    fun configureTxtRecords(gatewayPoolTxt: String, preferredIpsTxt: String) {
+        require(gatewayPoolTxt.isNotBlank())
+        require(preferredIpsTxt.isNotBlank())
+        configuredGatewayPoolTxt = gatewayPoolTxt
+        configuredPreferredIpsTxt = preferredIpsTxt
         invalidateGatewayForSdk()
     }
 
@@ -45,9 +55,9 @@ object EchDoh {
 
 
     /** 云端 DoH 网关的**内置默认**；实际用哪个由网关池（TXT）决定。 */
-    const val DOH_URL = "https://82sew1c85i.cloudflare-gateway.com/dns-query"
+    private const val DOH_URL = ""
 
-    private fun activeDohUrl(): String = configuredDohUrl ?: DOH_URL
+    private fun activeDohUrl(): String = configuredDohUrl.orEmpty()
 
     /**
      * 配置域名：TXT 记录里发布**网关池**（一行一个 DoH 端点 URL）。
@@ -60,7 +70,7 @@ object EchDoh {
      *   · 纯 URL 列表        —— 当前用的形式
      *   · key=value          —— `doh=https://…` / `doh2=https://…,https://…`
      */
-    private const val CONFIG_TXT_DOMAIN = "doh.xn--pn1aul.eu.org"
+    private val CONFIG_TXT_DOMAIN: String get() = configuredGatewayPoolTxt
     /**
      * 优选 IP 的配置域名：TXT 里发布**用户自己实测最快的 IP**（自选，不是网关自带的那批）。
      *
@@ -70,7 +80,7 @@ object EchDoh {
      *
      * 这些 IP 会排在 bootstrap 候选的**最前面**（用户实测快 > 解析结果 > 内置兜底）。
      */
-    private const val CONFIG_IP_DOMAIN = "ip.xn--pn1aul.eu.org"
+    private val CONFIG_IP_DOMAIN: String get() = configuredPreferredIpsTxt
     private const val GATEWAY_POOL_TTL_MS = 30 * 60 * 1000L
     private const val GATEWAY_IP_TTL_MS = 30 * 60 * 1000L
 
@@ -99,9 +109,7 @@ object EchDoh {
      * 之前那条 21 秒超时不是 IP 不通 —— 是**网关域名解析被污染**，连到了假地址。
      * （这也解释了为什么同一客户端连 `223.5.5.5` 只要 158ms：那家是纯 IP，无需解析。）
      */
-    private val DOH_FALLBACK_IPS = listOf(
-        "172.64.229.4", "172.64.229.128", "162.159.36.20", "162.159.36.5",
-    )
+    private val DOH_FALLBACK_IPS = emptyList<String>()
 
     private val bootstrapClient: OkHttpClient = OkHttpClient.Builder()
         // ⚠️ 禁用代理。默认的 proxySelector 是 ProxySelector.getDefault()（系统代理），
@@ -287,7 +295,7 @@ object EchDoh {
         val now = System.currentTimeMillis()
         poolCache?.let { (u, exp) -> if (exp > now && u.isNotEmpty()) return u }
         val specs = fetchGatewayPool()
-        if (specs.isEmpty()) {
+        if (specs.isEmpty() && activeDohUrl().isNotBlank()) {
             EchDiagnostics.trace("doh.pool.fallback", mapOf("url" to activeDohUrl()))
             return listOf(GatewaySpec(activeDohUrl(), configuredBootstrapIps))
         }
@@ -459,9 +467,6 @@ object EchDoh {
      * 跨 zone 注入实测可行，内层 SNI 仍是目标域名，SNI 不外泄。
      */
     private const val LIVE_SOURCE_HOST = "cloudflare-ech.com"
-
-    /** 启动预热的目标域名（本 App 的主站）。 */
-    const val WARMUP_HOST = "archiveofourown.org"
 
     /**
      * 取 ECH 活值的候选：**国内三家的纯 IP 端点**。
@@ -1002,7 +1007,7 @@ object EchDoh {
     private fun query(host: String, type: String): String? {
         // ⚠️ 必须走**当前生效的网关**，不能用写死的 DOH_URL ——
         // 网关池是远程 TXT 可调的，写死意味着换了网关这里还打旧地址（或打到一个被停用的端点）。
-        val base = currentGateway()?.url ?: DOH_URL
+        val base = currentGateway()?.url ?: activeDohUrl().ifBlank { return null }
         val req = Request.Builder()
             .url("$base?name=$host&type=$type")
             .header("Accept", "application/dns-json")
