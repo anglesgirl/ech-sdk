@@ -47,6 +47,8 @@ object EchSdk {
     fun configure(builder: OkHttpClient.Builder): OkHttpClient.Builder {
         check(config != null) { "EchSdk.install(context, config) must be called first" }
         val original = ProxySelector.getDefault()
+        val originalDns = builder.build().dns
+        val echDns = EchDns(originalDns)
         builder
             .proxy(null)
             .proxySelector(object : ProxySelector() {
@@ -59,7 +61,8 @@ object EchSdk {
                 }
             })
             .sslSocketFactory(ConscryptEch.socketFactory, ConscryptEch.trustManager)
-            .dns(EchDns())
+            .dns(echDns)
+            .addInterceptor(EchRetryInterceptor())
             .hostnameVerifier { host, session ->
                 javax.net.ssl.HttpsURLConnection.getDefaultHostnameVerifier().verify(host, session)
             }
