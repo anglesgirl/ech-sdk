@@ -327,6 +327,7 @@ object EchDoh {
             val host = runCatching { spec.url.toHttpUrl().host }.getOrNull() ?: continue
             // ★ TXT 自带 IP（`URL|IP|IP`）时**直接用它，不做解析** ——
             // 解析这一步本身也会失败（污染/超时），而「优选 IP」正是要由 TXT 远程控制的东西。
+            val preferred = preferredIps()
             val base = if (spec.ips.isNotEmpty()) {
                 EchDiagnostics.trace(
                     "doh.gateway.selfIp",
@@ -341,11 +342,8 @@ object EchDoh {
                 }
                 resolved
             }
-            // bootstrap 候选顺序（越靠前越先试）：
-            //   ① 用户自选的优选 IP（TXT 下发、实测最快）—— 排最前，"优选"才有意义
-            //   ② 网关自带 / 解析出的地址
-            //   ③ 内置兜底段
-            val ips = (configuredBootstrapIps + preferredIps() + base + DOH_FALLBACK_IPS).distinct()
+            // bootstrap 候选顺序：用户 TXT 优选 IP > 网关配置提供的地址 > 显式配置地址。
+            val ips = (preferred + base + configuredBootstrapIps).distinct()
             // ★ 可用性校验：池里可能有"域名能解析、但查询一律空应答"的坏端点
             //   （实测 v7e373e11t = Status:5 REFUSED）。不校验就会一直选它、
             //   一直 fail-closed，表现成"第一次打开失败、重试碰巧才好"。
