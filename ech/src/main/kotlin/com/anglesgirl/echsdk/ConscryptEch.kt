@@ -23,18 +23,24 @@ import javax.net.ssl.TrustManager
 import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509TrustManager
 
-/** 哪些域名必须走 ECH（与旧拦截器里的判定保持一致） */
+/** ECH 的尝试范围与核心域名分离：普通域名也先尝试，失败后才降级。 */
 object EchHosts {
-    @Volatile private var hosts: Set<String> = emptySet()
+    @Volatile private var coreHosts: Set<String> = emptySet()
 
     fun configure(values: Set<String>) {
-        hosts = values.map { it.lowercase().trimEnd('.') }.toSet()
+        coreHosts = values.map { it.lowercase().trimEnd('.') }.toSet()
     }
 
-    fun isProtected(host: String): Boolean {
+    /** 所有 HTTPS 域名都尝试 ECH；是否允许降级由核心域名规则决定。 */
+    fun shouldTryEch(host: String): Boolean = true
+
+    fun isCoreDomain(host: String): Boolean {
         val h = host.lowercase().trimEnd('.')
-        return hosts.any { h == it || h.endsWith(".$it") }
+        return coreHosts.any { h == it || h.endsWith(".$it") }
     }
+
+    /** 兼容现有调用点：这里表示“参与 ECH 传输层”，不是“必须成功”。 */
+    fun isProtected(host: String): Boolean = shouldTryEch(host)
 }
 
 /**
@@ -129,14 +135,18 @@ object ConscryptEch {
             CertificateTransparencyVerificationReason = CertificateTransparencyVerificationReason.UNKNOWN
 
         override fun getDomainEncryptionMode(hostname: String?): DomainEncryptionMode =
-            if (hostname != null && EchHosts.isProtected(hostname)) DomainEncryptionMode.ENABLED
-            else DomainEncryptionMode.DISABLED
+            if (hostname != null && EchHosts.shouldTryEch(hostname) && !EchState.isEchUnavailable(hostname)) {
+                DomainEncryptionMode.ENABLED
+            } else {
+                DomainEncryptionMode.DISABLED
+            }
     }
 
     /**
      * 包装 Conscrypt 的 SSLSocketFactory：在返回 socket 前按 host 注入 ECHConfigList。
      * OkHttp 走的是 createSocket(Socket, String, int, boolean) 这个重载。
-     * 拿不到配置时**抛异常**（fail-closed）—— 宁可不连，也绝不明文暴露被墙域名的 SNI。
+     * 拿不到配置时先记录 ECH 不可用并允许应用层降级；若降级连接仍失败，
+     * [EchRetryInterceptor] 会把域名持久标记为“被墙且无法使用 ECH”。
      */
     private class EchSocketFactory(private val delegate: SSLSocketFactory) : SSLSocketFactory() {
 
@@ -145,38 +155,37 @@ object ConscryptEch {
         override fun getSupportedCipherSuites(): Array<String> = delegate.supportedCipherSuites
 
         private fun prepare(s: Socket, host: String?): Socket {
-            if (host == null || s !is SSLSocket || !EchHosts.isProtected(host)) return s
+            if (host == null || s !is SSLSocket || !EchHosts.shouldTryEch(host)) return s
+            val core = EchHosts.isCoreDomain(host)
+            if (EchState.isBlocked(host)) {
+                throw IOException("域名已判定为被墙且无法使用 ECH，只能通过 VPN 访问：$host")
+            }
+            if (EchState.isEchUnavailable(host)) return s
             val t0 = System.currentTimeMillis()
             val cfg = EchDoh.echConfigList(host)
             if (cfg == null) {
+                EchState.markEchUnavailable(host)
                 EchDiagnostics.trace(
-                    "tls.ech.noConfig",
-                    mapOf(
-                        "host" to host,
-                        "ms" to (System.currentTimeMillis() - t0),
-                        "note" to "拿不到 ECHConfigList → fail-closed 拒绝明文（UI 显示 ECH_FAIL_CLOSED）"
-                    )
+                    "tls.ech.unavailable",
+                    mapOf("host" to host, "core" to core, "ms" to (System.currentTimeMillis() - t0))
                 )
-                throw IOException("ECH 配置不可用（fail-closed）：拒绝以明文访问 $host")
+                return s
             }
             try {
                 Conscrypt.setEchConfigList(s, cfg)
             } catch (t: Throwable) {
+                EchState.markEchUnavailable(host)
                 EchDiagnostics.trace(
                     "tls.ech.setFail",
-                    mapOf(
-                        "host" to host, "bytes" to cfg.size,
-                        "err" to "${t.javaClass.simpleName}: ${t.message}"
-                    )
+                    mapOf("host" to host, "bytes" to cfg.size, "core" to core,
+                          "err" to "${t.javaClass.simpleName}: ${t.message}")
                 )
-                throw IOException("setEchConfigList 失败（fail-closed）: ${t.message}")
+                if (core) throw IOException("setEchConfigList 失败，核心域名拒绝明文：${t.message}")
+                return s
             }
             EchDiagnostics.trace(
                 "tls.ech.inject",
-                mapOf(
-                    "host" to host, "bytes" to cfg.size,
-                    "ms" to (System.currentTimeMillis() - t0)
-                )
+                mapOf("host" to host, "bytes" to cfg.size, "ms" to (System.currentTimeMillis() - t0))
             )
             return s
         }
@@ -204,24 +213,29 @@ object ConscryptEch {
  */
 class EchDns(private val system: Dns = Dns.SYSTEM) : Dns {
     override fun lookup(hostname: String): List<InetAddress> {
-        if (!EchHosts.isProtected(hostname)) return system.lookup(hostname)
+        if (!EchHosts.shouldTryEch(hostname)) return system.lookup(hostname)
         val t0 = System.currentTimeMillis()
         EchDiagnostics.trace("net.doh.begin", mapOf("host" to hostname))
-        val addrs = EchDoh.resolve(hostname)
+        val addrs = runCatching { EchDoh.resolve(hostname) }.getOrElse {
+            if (!EchHosts.isCoreDomain(hostname)) {
+                EchDiagnostics.trace("net.doh.fallback", mapOf("host" to hostname, "err" to it.javaClass.simpleName))
+                return system.lookup(hostname)
+            }
+            throw it
+        }
         val ms = System.currentTimeMillis() - t0
         if (addrs.isEmpty()) {
             EchDiagnostics.trace(
                 "net.doh.fail",
-                mapOf("host" to hostname, "ms" to ms, "note" to "0 个地址 → fail-closed")
+                mapOf("host" to hostname, "ms" to ms, "core" to EchHosts.isCoreDomain(hostname))
             )
-            throw UnknownHostException("DoH 解析失败（fail-closed）：$hostname")
+            if (!EchHosts.isCoreDomain(hostname)) return system.lookup(hostname)
+            throw UnknownHostException("DoH 解析失败（核心域名拒绝系统 DNS）：$hostname")
         }
         EchDiagnostics.trace(
             "net.doh.ok",
-            mapOf(
-                "host" to hostname, "n" to addrs.size, "ms" to ms,
-                "ips" to addrs.joinToString(",") { it.hostAddress ?: "?" }
-            )
+            mapOf("host" to hostname, "n" to addrs.size, "ms" to ms,
+                  "ips" to addrs.joinToString(",") { it.hostAddress ?: "?" })
         )
         return addrs
     }
@@ -248,38 +262,31 @@ class EchRetryInterceptor : Interceptor {
         return try {
             chain.proceed(req)
         } catch (t: Throwable) {
-            if (!EchHosts.isProtected(host)) throw t
-            if (req.tag(Any::class.java) === Retried) throw t // 已重试过，不再循环
-
-            val echRejected = generateSequence(t) { it.cause }
-                .any { it.javaClass.simpleName.contains("EchRejected", ignoreCase = true) }
-            if (echRejected) {
+            if (!EchHosts.shouldTryEch(host)) throw t
+            if (req.tag(Any::class.java) === Retried) {
+                // ECH 已经失败并完成明文降级；明文仍失败，持久标记为当前网络被封。
+                EchState.markBlocked(host)
                 EchDiagnostics.trace(
-                    "tls.ech.rejected",
-                    mapOf("host" to host, "err" to "${t.javaClass.simpleName}: ${t.message}")
-                )
-            }
-            EchDiagnostics.trace(
-                "ech.refetch.begin",
-                mapOf(
-                    "host" to host,
-                    "err" to "${t.javaClass.simpleName}: ${t.message}",
-                    "echRejected" to echRejected,
-                    "note" to "任何失败都去权威源取新值并缓存"
-                )
-            )
-            val fresh = EchDoh.refetchNow(host)
-            if (fresh == null) {
-                EchDiagnostics.trace(
-                    "ech.refetch.fail",
-                    mapOf("host" to host, "note" to "权威源也没拿到 → fail-closed")
+                    "host.blocked",
+                    mapOf("host" to host, "note" to "ECH 与明文降级均失败，只能使用 VPN")
                 )
                 throw t
             }
-            EchDiagnostics.trace(
-                "ech.refetch.ok",
-                mapOf("host" to host, "bytes" to fresh.size, "note" to "已缓存新值，重试一次")
-            )
+
+            val echRejected = generateSequence(t) { it.cause }
+                .any {
+                    it.javaClass.simpleName.contains("EchRejected", ignoreCase = true) ||
+                        it.message?.contains("ECH_REJECTED", ignoreCase = true) == true
+                }
+            if (echRejected || !EchState.isEchUnavailable(host)) {
+                EchState.markEchUnavailable(host)
+                EchState.drop(host)
+                EchDiagnostics.trace(
+                    "ech.fallback",
+                    mapOf("host" to host, "echRejected" to echRejected,
+                          "note" to "ECH 失败，标记后降级明文重试一次")
+                )
+            }
             return chain.proceed(req.newBuilder().tag(Any::class.java, Retried).build())
         }
     }

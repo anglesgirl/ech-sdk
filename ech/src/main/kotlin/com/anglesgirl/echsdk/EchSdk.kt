@@ -40,6 +40,12 @@ object EchSdk {
         this.config = config
     }
 
+    /** 当前网络下已判定被墙且只能使用 VPN 的域名，供宿主显示标记。 */
+    fun blockedHosts(): Set<String> = EchState.blockedHosts()
+
+    /** 用户切换到 VPN 或网络恢复后，可重新探测该域名。 */
+    fun clearBlockedHost(host: String) = EchState.clearBlocked(host)
+
     /**
      * 在宿主已有 Builder 上调用，必须保留宿主已有 CookieJar 和业务拦截器。
      * 返回同一个 Builder，便于链式接入。
@@ -54,7 +60,7 @@ object EchSdk {
             .proxy(null)
             .proxySelector(object : ProxySelector() {
                 override fun select(uri: URI): List<Proxy> =
-                    if (EchHosts.isProtected(uri.host.orEmpty())) listOf(Proxy.NO_PROXY)
+                    if (EchHosts.shouldTryEch(uri.host.orEmpty())) listOf(Proxy.NO_PROXY)
                     else original?.select(uri) ?: listOf(Proxy.NO_PROXY)
 
                 override fun connectFailed(uri: URI, sa: SocketAddress, ioe: java.io.IOException) {
