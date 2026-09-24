@@ -54,9 +54,7 @@ object EchDoh {
     }
 
 
-    /** 云端 DoH 网关的**内置默认**；实际用哪个由网关池（TXT）决定。 */
-    private const val DOH_URL = ""
-
+    /** 可选的显式网关覆盖；默认只使用 TXT 网关池。 */
     private fun activeDohUrl(): String = configuredDohUrl.orEmpty()
 
     /**
@@ -95,20 +93,7 @@ object EchDoh {
 
     /** 保护域名的 ECH 判定缓存。 */
 
-    /**
-     * 网关地址的**末位后备**（正常情况下用不到）。
-     *
-     * 网关真相不写死在这里：先用国内种子 DoH 读配置域名的 TXT 拿到网关池（见 [gatewayPool]），
-     * 再动态解析出选定端点的地址（见 [currentGateway]）。
-     * 理由：
-     *   · 硬编码 IP 迟早失效 —— 网关可更换、地址段会被封、CF 边缘也会变；
-     *   · 而走系统 DNS 解析网关域名又会被污染（拿到假 IP → 连接超时）。
-     * 所以「网关在哪」交给国内 DoH 回答；这份清单只在**连国内 DoH 都失败**时兜底。
-     *
-     * 2026-09-22 用户拨测确认：`162.159.36.x` 与 `172.64.229.x` 两组 IP 在国内都是通的。
-     * 之前那条 21 秒超时不是 IP 不通 —— 是**网关域名解析被污染**，连到了假地址。
-     * （这也解释了为什么同一客户端连 `223.5.5.5` 只要 158ms：那家是纯 IP，无需解析。）
-     */
+    /** 仅使用 ip TXT 下发的地址作为网关 bootstrap；不内置网关地址兜底。 */
     private val DOH_FALLBACK_IPS = emptyList<String>()
 
     private val bootstrapClient: OkHttpClient = OkHttpClient.Builder()
@@ -290,7 +275,7 @@ object EchDoh {
 
     @Volatile private var poolCache: Pair<List<GatewaySpec>, Long>? = null
 
-    /** 网关池（带 TTL 缓存）；TXT 读不到就用内置默认。 */
+    /** 网关池（带 TTL 缓存）；TXT 与显式覆盖都不可用时返回空，调用方 fail-closed。 */
     private fun gatewayPool(): List<GatewaySpec> {
         val now = System.currentTimeMillis()
         poolCache?.let { (u, exp) -> if (exp > now && u.isNotEmpty()) return u }
@@ -324,7 +309,7 @@ object EchDoh {
     /**
      * 从网关池里挑第一个**能解析出地址**的端点。
      *
-     * 换网关只要改 TXT —— 池里哪个能用就用哪个；全都不行才回落内置默认。
+     * 换网关只要改 TXT —— 池里哪个能用就用哪个；没有可用端点则 fail-closed。
      */
     private fun currentGateway(): Gateway? {
         val now = System.currentTimeMillis()
@@ -425,8 +410,9 @@ object EchDoh {
      */
     private fun dohResolver(): DnsOverHttps {
         val gw = currentGateway()
-        val url = (gw?.url ?: activeDohUrl()).toHttpUrl()
-        val ips = gw?.ips ?: (configuredBootstrapIps + DOH_FALLBACK_IPS)
+        val endpoint = gw ?: throw java.net.UnknownHostException("ECH DoH gateway pool unavailable")
+        val url = endpoint.url.toHttpUrl()
+        val ips = endpoint.ips
         val key = url.toString() + "|" + ips.joinToString(",")
         resolverCache?.let { (r, k) -> if (k == key) return r }
         val pins = ips.mapNotNull { runCatching { InetAddress.getByName(it) }.getOrNull() }

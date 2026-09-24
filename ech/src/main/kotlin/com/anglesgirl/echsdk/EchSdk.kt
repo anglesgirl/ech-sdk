@@ -31,13 +31,13 @@ object EchSdk {
         require(config.gatewayPoolTxt.isNotBlank() && config.preferredIpsTxt.isNotBlank()) {
             "Gateway-pool and preferred-IP TXT names must be configured"
         }
-        this.config = config
         EchHosts.configure(config.protectedHosts)
         EchDoh.configure(config.dohUrl, config.dohBootstrapIps)
         EchDoh.configureTxtRecords(config.gatewayPoolTxt, config.preferredIpsTxt)
         EchDiagnostics.logger = config.logger
         EchState.attach(context.applicationContext)
         check(ConscryptEch.install()) { "Conscrypt ECH 初始化失败，拒绝继续创建客户端" }
+        this.config = config
     }
 
     /**
