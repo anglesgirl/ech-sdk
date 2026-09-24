@@ -46,6 +46,9 @@ object EchSdk {
     /** 用户切换到 VPN 或网络恢复后，可重新探测该域名。 */
     fun clearBlockedHost(host: String) = EchState.clearBlocked(host)
 
+    /** ECH 失败后的域名降级/封禁状态，供 Mihon UI 显示。 */
+    fun echUnavailableHosts(): Set<String> = EchState.echUnavailableHosts()
+
     /**
      * 在宿主已有 Builder 上调用，必须保留宿主已有 CookieJar 和业务拦截器。
      * 返回同一个 Builder，便于链式接入。

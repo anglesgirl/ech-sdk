@@ -95,6 +95,9 @@ object EchState {
     /** 当前网络下已判定为“ECH 不可用且明文也失败”的域名。 */
     fun blockedHosts(): Set<String> = readSet(KEY_BLOCKED)
 
+    /** 当前网络下已记录 ECH 失败、已允许明文降级的域名。 */
+    fun echUnavailableHosts(): Set<String> = readSet(KEY_ECH_UNAVAILABLE)
+
     /** 清除单个域名的失败标记，供用户切换网络后重新探测。 */
     fun clearBlocked(host: String) {
         val h = normalized(host)
