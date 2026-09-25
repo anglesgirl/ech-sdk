@@ -27,7 +27,6 @@ object EchSdk {
     @Volatile private var config: Config? = null
 
     fun install(context: Context, config: Config) {
-        require(config.protectedHosts.isNotEmpty()) { "At least one protected host is required" }
         require(config.gatewayPoolTxt.isNotBlank() && config.preferredIpsTxt.isNotBlank()) {
             "Gateway-pool and preferred-IP TXT names must be configured"
         }
