@@ -40,7 +40,12 @@ object EchSdk {
         this.config = config
     }
 
-    /** 当前网络下已判定被墙且只能使用 VPN 的域名，供宿主显示标记。 */
+    /** 当前已通过可用性校验的 DoH 网关端点，供可选 H3 通道复用。 */
+    fun activeDohEndpoint(): String? = EchDoh.activeDohEndpoint()
+
+    /**
+     * 当前网络下已判定被墙且只能使用 VPN 的域名，供宿主显示标记。
+     */
     fun blockedHosts(): Set<String> = EchState.blockedHosts()
 
     /** 用户切换到 VPN 或网络恢复后，可重新探测该域名。 */

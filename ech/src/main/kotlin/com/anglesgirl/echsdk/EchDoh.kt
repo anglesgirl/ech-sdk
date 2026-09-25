@@ -368,6 +368,9 @@ object EchDoh {
         addressCache.clear()
     }
 
+    /** 当前已选网关的 DoH 地址；未初始化或网关不可用时返回 null。 */
+    fun activeDohEndpoint(): String? = currentGateway()?.url ?: activeDohUrl().ifBlank { null }
+
     /**
      * 网关可用性校验：真的发一次查询，确认它**给得出答案**。
      *
